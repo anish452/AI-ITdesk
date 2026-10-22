@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String
+  department   String
+  plant        String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  requested    Ticket[] @relation("Requester")
+  assigned     Ticket[] @relation("Assignee")
+}
+
+model Ticket {
+  id               String   @id @default(cuid())
+  number           Int      @unique @default(autoincrement())
+  title            String
+  description      String
+  requesterId      String
+  requester        User     @relation("Requester", fields: [requesterId], references: [id])
+  requesterRole    String
+  department       String
+  plant            String
+  affectedSystem   String
+  status           String   @default("SUBMITTED")
+  category         String?
+  urgency          String?
+  priority         String?
+  confidence       Float?
+  escalated        Boolean  @default(false)
+  escalationReason String?
+  assignedToId     String?
+  assignedTo       User?    @relation("Assignee", fields: [assignedToId], references: [id])
+  resolution       String?
+  outcome          String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  resolvedAt       DateTime?
+  classifications  ClassificationResult[]
+  retrievals       RetrievalLog[]
+  recommendations  Recommendation[]
+  messages         AgentMessage[]
+
+  @@index([status])
+  @@index([requesterId])
+}
+
+model ClassificationResult {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  agent      String
+  category   String
+  urgency    String
+  priority   String
+  confidence Float
+  rationale  String
+  latencyMs  Int
+  payload    Json
+  createdAt  DateTime @default(now())
+}
+
+model RetrievalLog {
+  id        String   @id @default(cuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  method    String
+  latencyMs Int
+  hits      Json
+  createdAt DateTime @default(now())
+}
+
+model Recommendation {
+  id             String   @id @default(cuid())
+  ticketId       String
+  ticket         Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  method         String
+  problem        String
+  steps          Json
+  references     Json
+  confidence     Float
+  warning        String?
+  grounded       Boolean  @default(true)
+  generator      String
+  latencyMs      Int
+  usefulness     Int?
+  accepted       Boolean?
+  technicianNote String?
+  createdAt      DateTime @default(now())
+}
+
+model AgentMessage {
+  id        String   @id @default(cuid())
+  ticketId  String?
+  ticket    Ticket?  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  fromAgent String
+  toAgent   String
+  type      String
+  body      Json
+  createdAt DateTime @default(now())
+}
+
+model KnowledgeArticle {
+  id           String   @id @default(cuid())
+  title        String
+  body         String
+  category     String
+  system       String
+  sourceType   String
+  approved     Boolean  @default(true)
+  qualityScore Float    @default(1)
+  scenarioKey  String?
+  embedding    Unsupported("vector(256)")?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([category])
+  @@index([approved])
+}
+
+model DatasetRecord {
+  id             String @id @default(cuid())
+  split          String
+  title          String
+  description    String
+  category       String
+  urgency        String
+  priority       String
+  scenarioKey    String
+  requesterRole  String
+  affectedSystem String
+  goldResolution String
+
+  @@index([split])
+  @@index([scenarioKey])
+}
+
+model CandidateRule {
+  id              String   @id @default(cuid())
+  category        String
+  pattern         String
+  conditionText   String
+  suggestedAction String
+  supportCount    Int      @default(1)
+  status          String   @default("CANDIDATE")
+  exampleTicketId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model LearningReport {
+  id               String   @id @default(cuid())
+  ticketId         String?
+  summary          String
+  recordsAdded     Int
+  recordsRejected  Int
+  rulesUpdated     Int
+  details          Json
+  createdAt        DateTime @default(now())
+}
+
+model EvaluationRun {
+  id         String   @id @default(cuid())
+  label      String
+  metrics    Json
+  hypotheses Json
+  durationMs Int
+  createdAt  DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actorEmail String?
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Setting {
+  id                  Int    @id @default(1)
+  confidenceThreshold Float  @default(0.42)
+  orgName             String @default("Northline Manufacturing")
+}
