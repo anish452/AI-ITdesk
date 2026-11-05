@@ -1,6 +1,6 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { CATEGORIES, PRIORITIES, URGENCIES } from '../domain.js';
+import { CATEGORIES, CATEGORY_LABEL, PRIORITIES, URGENCIES, urgencyRank, type Urgency } from '../domain.js';
 import { audit } from '../lib/audit.js';
 import { checkPassword, hashPassword, signToken } from '../lib/auth.js';
 import { prisma } from '../lib/prisma.js';
@@ -8,6 +8,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { enqueueLearning, enqueuePipeline, queueReady } from '../jobs/queue.js';
 import { hypothesisVerdict, runExperiment } from '../nlp/experiment.js';
 import { llmEnabled } from '../config.js';
+import { getBundle } from '../lib/models.js';
+import { canWorkTicket, specialistFor } from '../services/assignment.js';
 import { rebuildRecommendation } from '../services/pipeline.js';
 import { storeArticle } from '../services/knowledge.js';
 
@@ -26,6 +28,19 @@ function publicUser<T extends { passwordHash?: string }>(user: T): Omit<T, 'pass
   const copy = { ...user };
   delete copy.passwordHash;
   return copy;
+}
+
+async function workableTicket(req: Request, res: Response) {
+  const ticket = await prisma.ticket.findUnique({ where: { id: req.params.id } });
+  if (!ticket) {
+    res.status(404).json({ error: 'Ticket not found.' });
+    return null;
+  }
+  if (!req.user || !canWorkTicket(req.user, ticket)) {
+    res.status(403).json({ error: 'This request is allocated to the support specialist for its category.' });
+    return null;
+  }
+  return ticket;
 }
 
 router.get('/health', async (_req, res) => {
@@ -69,11 +84,16 @@ router.get('/auth/me', requireAuth, async (req, res) => {
 });
 
 router.get('/tickets', requireAuth, async (req, res) => {
-  const where = req.user!.role === 'EMPLOYEE' ? { requesterId: req.user!.id } : {};
+  const user = req.user!;
+  const where = user.role === 'EMPLOYEE'
+    ? { requesterId: user.id }
+    : user.role === 'TECHNICIAN' && user.supportCategory
+      ? { OR: [{ category: user.supportCategory }, { assignedToId: user.id }] }
+      : {};
   const tickets = await prisma.ticket.findMany({
     where,
     orderBy: { createdAt: 'desc' },
-    include: { requester: { select: { name: true, department: true, plant: true } }, assignedTo: { select: { name: true } } },
+    include: { requester: { select: { name: true, department: true, plant: true } }, assignedTo: { select: { id: true, name: true } } },
   });
   res.json({ tickets });
 });
@@ -88,7 +108,36 @@ router.get('/tickets/:id', requireAuth, async (req, res) => {
     res.status(403).json({ error: 'You can only open your own requests.' });
     return;
   }
+  if (req.user!.role !== 'EMPLOYEE' && !canWorkTicket(req.user!, ticket)) {
+    res.status(403).json({ error: 'This request is allocated to the support specialist for its category.' });
+    return;
+  }
   res.json({ ticket });
+});
+
+router.post('/tickets/preview', requireAuth, async (req, res) => {
+  const parsed = z
+    .object({
+      title: z.string().max(160).optional().default(''),
+      description: z.string().max(4000).optional().default(''),
+      affectedSystem: z.string().max(80).optional().default(''),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'The request text could not be classified.' });
+    return;
+  }
+  const title = parsed.data.title.trim();
+  const description = parsed.data.description.trim();
+  if (`${title} ${description}`.trim().length < 3) {
+    res.status(400).json({ error: 'Enter a title or description to suggest a category.' });
+    return;
+  }
+  const classification = getBundle().classificationAgent(title, description, parsed.data.affectedSystem.trim());
+  res.json({
+    category: classification.category,
+    confidence: classification.confidence,
+  });
 });
 
 router.post('/tickets', requireAuth, async (req, res) => {
@@ -98,6 +147,7 @@ router.post('/tickets', requireAuth, async (req, res) => {
       description: z.string().min(12).max(4000),
       affectedSystem: z.string().min(2).max(80).optional(),
       plant: z.string().min(2).max(80).optional(),
+      category: z.enum(CATEGORIES).optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -119,16 +169,34 @@ router.post('/tickets', requireAuth, async (req, res) => {
       plant: parsed.data.plant?.trim() || me.plant,
       affectedSystem: parsed.data.affectedSystem?.trim() || 'Not specified',
       status: 'SUBMITTED',
+      category: parsed.data.category,
     },
   });
-  await audit({ actorId: me.id, actorEmail: me.email, action: 'ticket.created', entityType: 'Ticket', entityId: ticket.id, details: { title: ticket.title } });
+  if (parsed.data.category) {
+    await prisma.classificationResult.create({
+      data: {
+        ticketId: ticket.id,
+        agent: 'requester',
+        category: parsed.data.category,
+        urgency: 'MEDIUM',
+        priority: 'P3',
+        confidence: 1,
+        rationale: `${me.name} chose ${CATEGORY_LABEL[parsed.data.category]} because the suggested category was wrong.`,
+        latencyMs: 0,
+        payload: { category: parsed.data.category },
+      },
+    });
+  }
+  await audit({ actorId: me.id, actorEmail: me.email, action: 'ticket.created', entityType: 'Ticket', entityId: ticket.id, details: { title: ticket.title, category: parsed.data.category ?? null } });
   await enqueuePipeline(ticket.id);
   const fresh = await prisma.ticket.findUnique({ where: { id: ticket.id }, include: ticketInclude });
   res.status(201).json({ ticket: fresh });
 });
 
 router.post('/tickets/:id/reprocess', requireAuth, requireRole('TECHNICIAN', 'MANAGER', 'ADMIN'), async (req, res) => {
-  await enqueuePipeline(req.params.id);
+  const ticket = await workableTicket(req, res);
+  if (!ticket) return;
+  await enqueuePipeline(ticket.id);
   res.json({ ok: true });
 });
 
@@ -144,15 +212,18 @@ router.patch('/tickets/:id/classification', requireAuth, requireRole('TECHNICIAN
     res.status(400).json({ error: 'Choose a category, urgency, and priority.' });
     return;
   }
+  const existing = await workableTicket(req, res);
+  if (!existing) return;
+  const specialist = await specialistFor(parsed.data.category);
   const ticket = await prisma.ticket.update({
-    where: { id: req.params.id },
+    where: { id: existing.id },
     data: {
       ...parsed.data,
       confidence: 1,
       escalated: false,
       escalationReason: null,
       status: 'PENDING_REVIEW',
-      assignedToId: req.user!.id,
+      assignedToId: specialist?.id ?? existing.assignedToId ?? req.user!.id,
     },
   });
   await prisma.classificationResult.create({
@@ -169,12 +240,83 @@ router.patch('/tickets/:id/classification', requireAuth, requireRole('TECHNICIAN
     },
   });
   await audit({ actorId: req.user!.id, actorEmail: req.user!.email, action: 'classification.overridden', entityType: 'Ticket', entityId: ticket.id, details: parsed.data });
+  await rebuildRecommendation(ticket.id);
+  const fresh = await prisma.ticket.findUnique({ where: { id: ticket.id }, include: ticketInclude });
+  res.json({ ticket: fresh });
+});
+
+router.patch('/tickets/:id/category', requireAuth, async (req, res) => {
+  const parsed = z.object({ category: z.enum(CATEGORIES) }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Choose a category.' });
+    return;
+  }
+  const existing = await prisma.ticket.findUnique({ where: { id: req.params.id } });
+  if (!existing) {
+    res.status(404).json({ error: 'Ticket not found.' });
+    return;
+  }
+  if (existing.requesterId !== req.user!.id) {
+    res.status(403).json({ error: 'Only the person who raised this request can change its category.' });
+    return;
+  }
+  if (existing.status === 'RESOLVED') {
+    res.status(400).json({ error: 'A resolved request keeps the category recorded with its outcome.' });
+    return;
+  }
+  const category = parsed.data.category;
+  let urgency = existing.urgency ?? 'MEDIUM';
+  let priority = existing.priority ?? 'P3';
+  if (category === 'CYBERSECURITY' && urgencyRank(urgency as Urgency) < urgencyRank('HIGH')) {
+    urgency = 'HIGH';
+    priority = 'P2';
+  }
+  const specialist = await specialistFor(category);
+  const processing = ['SUBMITTED', 'CLASSIFYING', 'RECOMMENDING'].includes(existing.status);
+  await prisma.classificationResult.create({
+    data: {
+      ticketId: existing.id,
+      agent: 'requester',
+      category,
+      urgency,
+      priority,
+      confidence: 1,
+      rationale: `${req.user!.name} changed the category to ${CATEGORY_LABEL[category]} because the suggestion was wrong.`,
+      latencyMs: 0,
+      payload: { from: existing.category, to: category },
+    },
+  });
+  await prisma.ticket.update({
+    where: { id: existing.id },
+    data: {
+      category,
+      urgency,
+      priority,
+      confidence: 1,
+      escalated: false,
+      escalationReason: null,
+      assignedToId: specialist?.id ?? null,
+      status: processing ? existing.status : 'PENDING_REVIEW',
+    },
+  });
+  if (!processing) await rebuildRecommendation(existing.id);
+  await audit({
+    actorId: req.user!.id,
+    actorEmail: req.user!.email,
+    action: 'category.corrected',
+    entityType: 'Ticket',
+    entityId: existing.id,
+    details: { from: existing.category, to: category },
+  });
+  const ticket = await prisma.ticket.findUnique({ where: { id: existing.id }, include: ticketInclude });
   res.json({ ticket });
 });
 
 router.post('/tickets/:id/recommend', requireAuth, requireRole('TECHNICIAN', 'MANAGER', 'ADMIN'), async (req, res) => {
-  await rebuildRecommendation(req.params.id);
-  const ticket = await prisma.ticket.findUnique({ where: { id: req.params.id }, include: ticketInclude });
+  const existing = await workableTicket(req, res);
+  if (!existing) return;
+  await rebuildRecommendation(existing.id);
+  const ticket = await prisma.ticket.findUnique({ where: { id: existing.id }, include: ticketInclude });
   res.json({ ticket });
 });
 
@@ -190,7 +332,9 @@ router.post('/tickets/:id/feedback', requireAuth, requireRole('TECHNICIAN', 'MAN
     res.status(400).json({ error: 'Rate the recommendation from 1 to 5 and accept or reject it.' });
     return;
   }
-  const latest = await prisma.recommendation.findFirst({ where: { ticketId: req.params.id }, orderBy: { createdAt: 'desc' } });
+  const existing = await workableTicket(req, res);
+  if (!existing) return;
+  const latest = await prisma.recommendation.findFirst({ where: { ticketId: existing.id }, orderBy: { createdAt: 'desc' } });
   if (!latest) {
     res.status(404).json({ error: 'There is no recommendation on this ticket yet.' });
     return;
@@ -199,9 +343,12 @@ router.post('/tickets/:id/feedback', requireAuth, requireRole('TECHNICIAN', 'MAN
     where: { id: latest.id },
     data: { usefulness: parsed.data.usefulness, accepted: parsed.data.accepted, technicianNote: parsed.data.note ?? null },
   });
-  await prisma.ticket.update({ where: { id: req.params.id }, data: { status: 'IN_PROGRESS', assignedToId: req.user!.id } });
-  await audit({ actorId: req.user!.id, actorEmail: req.user!.email, action: 'recommendation.reviewed', entityType: 'Ticket', entityId: req.params.id, details: parsed.data });
-  const ticket = await prisma.ticket.findUnique({ where: { id: req.params.id }, include: ticketInclude });
+  await prisma.ticket.update({
+    where: { id: existing.id },
+    data: { status: 'IN_PROGRESS', assignedToId: existing.assignedToId ?? req.user!.id },
+  });
+  await audit({ actorId: req.user!.id, actorEmail: req.user!.email, action: 'recommendation.reviewed', entityType: 'Ticket', entityId: existing.id, details: parsed.data });
+  const ticket = await prisma.ticket.findUnique({ where: { id: existing.id }, include: ticketInclude });
   res.json({ ticket });
 });
 
@@ -216,14 +363,16 @@ router.post('/tickets/:id/resolve', requireAuth, requireRole('TECHNICIAN', 'MANA
     res.status(400).json({ error: 'Record what you did and whether it resolved the request. The desk does not close a ticket without that note.' });
     return;
   }
+  const existing = await workableTicket(req, res);
+  if (!existing) return;
   const ticket = await prisma.ticket.update({
-    where: { id: req.params.id },
+    where: { id: existing.id },
     data: {
       resolution: parsed.data.resolution.trim(),
       outcome: parsed.data.outcome,
       status: 'RESOLVED',
       resolvedAt: new Date(),
-      assignedToId: req.user!.id,
+      assignedToId: existing.assignedToId ?? req.user!.id,
       escalated: false,
     },
   });
@@ -379,6 +528,7 @@ router.post('/users', requireAuth, requireRole('ADMIN'), async (req, res) => {
       role: z.enum(['EMPLOYEE', 'TECHNICIAN', 'MANAGER', 'ADMIN']),
       department: z.string().min(2),
       plant: z.string().min(2),
+      supportCategory: z.enum(CATEGORIES).nullish(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -393,6 +543,7 @@ router.post('/users', requireAuth, requireRole('ADMIN'), async (req, res) => {
       role: parsed.data.role,
       department: parsed.data.department,
       plant: parsed.data.plant,
+      supportCategory: parsed.data.role === 'TECHNICIAN' ? parsed.data.supportCategory ?? null : null,
     },
   });
   await audit({ actorId: req.user!.id, actorEmail: req.user!.email, action: 'user.created', entityType: 'User', entityId: user.id, details: { email: user.email, role: user.role } });

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+server/.env.docker
+server/data/*.sql
 *.log
 .DS_Store
 server/data/model.json

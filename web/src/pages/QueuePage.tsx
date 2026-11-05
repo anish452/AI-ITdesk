@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
 import { api } from '../lib/api';
-import { pretty, ticketNo, when } from '../lib/utils';
+import { useAuth } from '../lib/auth';
+import { categoryLabel, pretty, ticketNo, when } from '../lib/utils';
 
 type TicketRow = {
   id: string;
@@ -17,9 +18,11 @@ type TicketRow = {
   plant: string;
   createdAt: string;
   requester: { name: string; department: string };
+  assignedTo: { name: string } | null;
 };
 
 export function QueuePage() {
+  const { user } = useAuth();
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [filter, setFilter] = useState('OPEN');
   const [error, setError] = useState('');
@@ -36,9 +39,10 @@ export function QueuePage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <p className="text-xs tracking-[0.16em] text-muted">TECHNICIAN QUEUE</p>
+      <p className="text-xs tracking-[0.16em] text-muted">{user?.supportCategory ? `${categoryLabel(user.supportCategory).toUpperCase()} QUEUE` : 'TECHNICIAN QUEUE'}</p>
       <div className="mt-1">
-        <h1 className="font-serif text-4xl">Requests waiting for a person</h1>
+        <h1 className="font-serif text-4xl">{user?.supportCategory ? `${categoryLabel(user.supportCategory)} requests` : 'Requests waiting for a person'}</h1>
+        {user?.supportCategory && <p className="mt-2 text-sm text-muted">Classified requests in this category are allocated to you. Open one to accept the recommendation or record a resolution.</p>}
         <div className="mt-4 flex flex-wrap gap-2 text-sm">
           {['OPEN', 'ESCALATED', 'PENDING_REVIEW', 'IN_PROGRESS', 'RESOLVED', 'ALL'].map((item) => (
             <button key={item} className={`rounded-full px-3 py-1 ${filter === item ? 'bg-pine text-white' : 'bg-panel border border-line'}`} onClick={() => setFilter(item)} type="button">
@@ -57,6 +61,7 @@ export function QueuePage() {
               <th className="px-4 py-3 font-medium">Category</th>
               <th className="px-4 py-3 font-medium">Priority</th>
               <th className="px-4 py-3 font-medium">Confidence</th>
+              <th className="px-4 py-3 font-medium">Assignee</th>
               <th className="px-4 py-3 font-medium">Status</th>
             </tr>
           </thead>
@@ -71,9 +76,10 @@ export function QueuePage() {
                   <div>{ticket.title}</div>
                   <div className="text-xs text-muted">{ticket.requester.name} · {ticket.plant}</div>
                 </td>
-                <td className="px-4 py-3">{pretty(ticket.category)}</td>
+                <td className="px-4 py-3">{categoryLabel(ticket.category)}</td>
                 <td className="px-4 py-3">{ticket.priority ? <Badge value={ticket.priority}>{ticket.priority}</Badge> : '—'}</td>
                 <td className="px-4 py-3">{ticket.confidence == null ? '—' : ticket.confidence.toFixed(2)}</td>
+                <td className="px-4 py-3">{ticket.assignedTo?.name ?? 'Unassigned'}</td>
                 <td className="px-4 py-3"><Badge value={ticket.status}>{pretty(ticket.status)}</Badge></td>
               </tr>
             ))}

@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
-import { Field, Input, TextArea } from '../components/ui/field';
+import { Field, Input, Select, TextArea } from '../components/ui/field';
 import { api } from '../lib/api';
-import { pretty, ticketNo, when } from '../lib/utils';
+import { REQUEST_CATEGORIES, categoryLabel, pretty, ticketNo, when } from '../lib/utils';
 
 type TicketRow = {
   id: string;
@@ -23,9 +23,13 @@ export function EmployeeHome() {
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [affectedSystem, setAffectedSystem] = useState('SAP S/4HANA');
+  const [affectedSystem, setAffectedSystem] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [category, setCategory] = useState('');
+  const [suggestedCategory, setSuggestedCategory] = useState<string | null>(null);
+  const [categoryEdited, setCategoryEdited] = useState(false);
+  const [checkingCategory, setCheckingCategory] = useState(false);
 
   function load() {
     api<{ tickets: TicketRow[] }>('/api/tickets').then((result) => setTickets(result.tickets)).catch((err: Error) => setError(err.message));
@@ -33,14 +37,50 @@ export function EmployeeHome() {
 
   useEffect(() => { load(); }, []);
 
+  useEffect(() => {
+    const text = `${title} ${description}`.trim();
+    if (text.length < 3) {
+      setSuggestedCategory(null);
+      setCheckingCategory(false);
+      return;
+    }
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      setCheckingCategory(true);
+      api<{ category: string }>('/api/tickets/preview', {
+        method: 'POST',
+        body: JSON.stringify({ title, description, affectedSystem }),
+      })
+        .then((result) => {
+          if (cancelled) return;
+          setSuggestedCategory(result.category);
+          if (!categoryEdited) setCategory(result.category);
+        })
+        .catch(() => {
+          if (!cancelled) setSuggestedCategory(null);
+        })
+        .finally(() => {
+          if (!cancelled) setCheckingCategory(false);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [title, description, affectedSystem, categoryEdited]);
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError('');
     try {
-      await api('/api/tickets', { method: 'POST', body: JSON.stringify({ title, description, affectedSystem }) });
+      const chosen = categoryEdited && category ? category : undefined;
+      await api('/api/tickets', { method: 'POST', body: JSON.stringify({ title, description, affectedSystem, category: chosen }) });
       setTitle('');
       setDescription('');
+      setCategory('');
+      setSuggestedCategory(null);
+      setCategoryEdited(false);
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not submit the request');
@@ -67,11 +107,32 @@ export function EmployeeHome() {
                 <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Cannot open a purchase order in SAP" />
               </Field>
               <Field label="Affected system">
-                <Input value={affectedSystem} onChange={(event) => setAffectedSystem(event.target.value)} />
+                <Input value={affectedSystem} onChange={(event) => setAffectedSystem(event.target.value)} placeholder="Office printer, SAP, LineSight…" />
               </Field>
               <Field label="What happened">
                 <TextArea rows={6} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Plant, transaction or station, and whether production or shipping is waiting." />
               </Field>
+              <Field label="Category">
+                <Select
+                  value={category}
+                  onChange={(event) => {
+                    setCategoryEdited(true);
+                    setCategory(event.target.value);
+                  }}
+                >
+                  <option value="">Choose a category</option>
+                  {REQUEST_CATEGORIES.map((item) => <option key={item} value={item}>{categoryLabel(item)}</option>)}
+                </Select>
+              </Field>
+              <p className="text-xs leading-5 text-muted">
+                {checkingCategory && !category
+                  ? 'Reading the title and description…'
+                  : suggestedCategory && !categoryEdited
+                    ? 'Suggested from the title and description. Change it if this is wrong.'
+                    : suggestedCategory && category && category !== suggestedCategory
+                      ? `Suggested category was ${categoryLabel(suggestedCategory)}. This request will use ${categoryLabel(category)}.`
+                      : 'Type a title or description for a suggestion, or choose the category yourself.'}
+              </p>
               {error && <p className="text-sm text-bad">{error}</p>}
               <Button type="submit" disabled={busy}>{busy ? 'Sending…' : 'Submit request'}</Button>
             </form>
@@ -91,7 +152,7 @@ export function EmployeeHome() {
                 </div>
                 <div>
                   <div className="text-sm">{ticket.title}</div>
-                  <div className="mt-1 text-xs text-muted">{ticket.affectedSystem} · {ticket.plant}</div>
+                  <div className="mt-1 text-xs text-muted">{ticket.affectedSystem} · {ticket.plant}{ticket.category ? ` · ${categoryLabel(ticket.category)}` : ''}</div>
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <Badge value={ticket.status}>{pretty(ticket.status)}</Badge>

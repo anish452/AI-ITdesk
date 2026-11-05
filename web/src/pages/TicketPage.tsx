@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -6,7 +6,7 @@ import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { Field, Select, TextArea } from '../components/ui/field';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { pretty, ticketNo, when } from '../lib/utils';
+import { REQUEST_CATEGORIES, categoryLabel, pretty, ticketNo, when } from '../lib/utils';
 
 type Hit = { id: string; title: string; score: number; sourceType: string };
 type Ticket = {
@@ -28,14 +28,12 @@ type Ticket = {
   outcome: string | null;
   createdAt: string;
   requester: { name: string; department: string; plant: string };
-  assignedTo: { name: string } | null;
+  assignedTo: { id: string; name: string } | null;
   classifications: { id: string; agent: string; category: string; urgency: string; priority: string; confidence: number; rationale: string; latencyMs: number }[];
   recommendations: { id: string; problem: string; steps: string[]; references: Hit[]; confidence: number; warning: string | null; generator: string; grounded: boolean; usefulness: number | null; accepted: boolean | null; technicianNote: string | null }[];
   retrievals: { id: string; method: string; latencyMs: number; hits: Hit[] }[];
   messages: { id: string; fromAgent: string; toAgent: string; type: string; body: unknown; createdAt: string }[];
 };
-
-const categories = ['ERP', 'MES', 'IDENTITY_ACCESS', 'NETWORK', 'HARDWARE', 'SOFTWARE', 'CYBERSECURITY'];
 
 export function TicketPage() {
   const { id } = useParams();
@@ -43,6 +41,7 @@ export function TicketPage() {
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [error, setError] = useState('');
   const [category, setCategory] = useState('ERP');
+  const categoryDirty = useRef(false);
   const [urgency, setUrgency] = useState('MEDIUM');
   const [priority, setPriority] = useState('P3');
   const [usefulness, setUsefulness] = useState(4);
@@ -50,16 +49,23 @@ export function TicketPage() {
   const [resolution, setResolution] = useState('');
   const [outcome, setOutcome] = useState('SUCCESS');
   const [showMessages, setShowMessages] = useState(false);
-  const staff = user && user.role !== 'EMPLOYEE';
+  const staff = Boolean(user && user.role !== 'EMPLOYEE');
+  const canAct = Boolean(
+    user &&
+    user.role !== 'EMPLOYEE' &&
+    (!user.supportCategory || user.role !== 'TECHNICIAN' || ticket?.category === user.supportCategory || ticket?.assignedTo?.id === user.id),
+  );
 
   function load() {
     if (!id) return;
     api<{ ticket: Ticket }>(`/api/tickets/${id}`)
       .then((result) => {
         setTicket(result.ticket);
-        if (result.ticket.category) setCategory(result.ticket.category);
-        if (result.ticket.urgency) setUrgency(result.ticket.urgency);
-        if (result.ticket.priority) setPriority(result.ticket.priority);
+        if (!categoryDirty.current) {
+          if (result.ticket.category) setCategory(result.ticket.category);
+          if (result.ticket.urgency) setUrgency(result.ticket.urgency);
+          if (result.ticket.priority) setPriority(result.ticket.priority);
+        }
       })
       .catch((err: Error) => setError(err.message));
   }
@@ -84,8 +90,12 @@ export function TicketPage() {
 
   if (!ticket) return <p className="text-sm text-muted">{error || 'Loading the ticket…'}</p>;
   const latest = ticket.classifications[0];
+  const agentSuggestion = ticket.classifications.find((item) => item.agent !== 'requester' && item.agent !== 'technician');
+  const correction = ticket.classifications.find((item) => item.agent === 'requester' || item.agent === 'technician');
+  const shownCategory = ticket.category ?? latest?.category ?? null;
   const recommendation = ticket.recommendations[0];
   const evidence = ticket.retrievals[0];
+  const requester = user?.role === 'EMPLOYEE';
 
   return (
     <div className="mx-auto grid max-w-6xl gap-5">
@@ -121,26 +131,54 @@ export function TicketPage() {
         <Card>
           <CardHeader><h2 className="font-serif text-2xl">Classification agent</h2></CardHeader>
           <CardBody className="space-y-3 text-sm">
-            {!latest && <p className="text-muted">Waiting for the classification agent.</p>}
-            {latest && (
+            {!latest && !shownCategory && <p className="text-muted">Waiting for the classification agent.</p>}
+            {(shownCategory || latest) && (
               <>
                 <div className="flex flex-wrap gap-2">
-                  <Badge>{pretty(latest.category)}</Badge>
-                  <Badge value={latest.urgency}>{pretty(latest.urgency)}</Badge>
-                  <Badge value={latest.priority}>{latest.priority}</Badge>
-                  <span className="text-xs text-muted">confidence {latest.confidence.toFixed(2)} · {latest.latencyMs} ms · {latest.agent}</span>
+                  {shownCategory && <Badge>{categoryLabel(shownCategory)}</Badge>}
+                  {(ticket.urgency ?? latest?.urgency) && <Badge value={ticket.urgency ?? latest?.urgency}>{pretty(ticket.urgency ?? latest?.urgency)}</Badge>}
+                  {(ticket.priority ?? latest?.priority) && <Badge value={ticket.priority ?? latest?.priority}>{ticket.priority ?? latest?.priority}</Badge>}
+                  {latest && <span className="text-xs text-muted">confidence {(correction && correction.category === ticket.category ? correction : latest).confidence.toFixed(2)} · {latest.latencyMs} ms · {latest.agent}</span>}
                 </div>
-                <p className="leading-6 text-muted">{latest.rationale}</p>
+                <p className="leading-6 text-muted">{correction && correction.category === ticket.category ? correction.rationale : latest?.rationale}</p>
+                {agentSuggestion && ticket.category && agentSuggestion.category !== ticket.category && (
+                  <p className="text-xs text-muted">The classification agent suggested {categoryLabel(agentSuggestion.category)}.</p>
+                )}
               </>
             )}
-            {staff && (
+            {requester && ticket.status !== 'RESOLVED' && (
+              <div className="grid gap-2 border-t border-line pt-3">
+                <Field label="Category">
+                  <Select value={category} onChange={(event) => { categoryDirty.current = true; setCategory(event.target.value); }}>
+                    {REQUEST_CATEGORIES.map((item) => <option key={item} value={item}>{categoryLabel(item)}</option>)}
+                  </Select>
+                </Field>
+                <p className="text-xs leading-5 text-muted">Change this if the category is wrong. The request is then sent to the specialist for that category, and the recommendation is prepared again.</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!category || category === ticket.category || (!ticket.category && !categoryDirty.current)}
+                  onClick={() => {
+                    api(`/api/tickets/${ticket.id}/category`, { method: 'PATCH', body: JSON.stringify({ category }) })
+                      .then(() => {
+                        categoryDirty.current = false;
+                        load();
+                      })
+                      .catch((err: Error) => setError(err.message));
+                  }}
+                >
+                  Update category
+                </Button>
+              </div>
+            )}
+            {canAct && (
               <div className="grid gap-2 border-t border-line pt-3">
                 <div className="grid grid-cols-3 gap-2">
-                  <Field label="Category"><Select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((item) => <option key={item}>{item}</option>)}</Select></Field>
+                  <Field label="Category"><Select value={category} onChange={(event) => { categoryDirty.current = true; setCategory(event.target.value); }}>{REQUEST_CATEGORIES.map((item) => <option key={item} value={item}>{categoryLabel(item)}</option>)}</Select></Field>
                   <Field label="Urgency"><Select value={urgency} onChange={(event) => setUrgency(event.target.value)}>{['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((item) => <option key={item}>{item}</option>)}</Select></Field>
                   <Field label="Priority"><Select value={priority} onChange={(event) => setPriority(event.target.value)}>{['P4', 'P3', 'P2', 'P1'].map((item) => <option key={item}>{item}</option>)}</Select></Field>
                 </div>
-                <Button type="button" variant="outline" onClick={() => api(`/api/tickets/${ticket.id}/classification`, { method: 'PATCH', body: JSON.stringify({ category, urgency, priority }) }).then(load).catch((err: Error) => setError(err.message))}>
+                <Button type="button" variant="outline" onClick={() => api(`/api/tickets/${ticket.id}/classification`, { method: 'PATCH', body: JSON.stringify({ category, urgency, priority }) }).then(() => { categoryDirty.current = false; load(); }).catch((err: Error) => setError(err.message))}>
                   Confirm classification
                 </Button>
               </div>
@@ -180,7 +218,7 @@ export function TicketPage() {
                 {recommendation.accepted != null && <p>Review: {recommendation.accepted ? 'accepted' : 'rejected'} · usefulness {recommendation.usefulness}/5. {recommendation.technicianNote}</p>}
               </>
             )}
-            {staff && recommendation && ticket.status !== 'RESOLVED' && (
+            {canAct && recommendation && ticket.status !== 'RESOLVED' && (
               <div className="space-y-2 border-t border-line pt-3">
                 <Field label="Usefulness (1–5)">
                   <Select value={String(usefulness)} onChange={(event) => setUsefulness(Number(event.target.value))}>
@@ -199,7 +237,11 @@ export function TicketPage() {
         </Card>
       </div>
 
-      {staff && ticket.status !== 'RESOLVED' && (
+      {staff && !canAct && (
+        <p className="rounded-lg border border-line bg-panel px-4 py-3 text-sm">This request is allocated to {ticket.assignedTo?.name ?? 'another specialist'}. Sign in as that person to accept the recommendation or record a resolution.</p>
+      )}
+
+      {canAct && ticket.status !== 'RESOLVED' && (
         <Card>
           <CardHeader><h2 className="font-serif text-2xl">Resolution</h2></CardHeader>
           <CardBody className="space-y-3">

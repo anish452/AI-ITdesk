@@ -160,9 +160,21 @@ export class ModelBundle {
       urgency = 'HIGH';
       reasons.push('Organisational rule: cybersecurity requests are at least high priority.');
     }
-    const category = (CATEGORIES.includes(categoryPrediction.label as Category)
+    let category = (CATEGORIES.includes(categoryPrediction.label as Category)
       ? categoryPrediction.label
       : 'SOFTWARE') as Category;
+    const requestText = `${title}\n${description}`.toLowerCase();
+    const printFailure = /\b(printers?|printouts?|print outs|cannot print|can not print|will not print|won'?t print)\b/.test(requestText)
+      || (/\bprint\b/.test(requestText) && /\b(error|errors)\b/.test(requestText));
+    const namedOtherSystem = /\b(vlan|ssid|vpn|wi-?fi|sap|s\/4hana|migo|me21n|me22n|purchase order|goods receipt|invoice|phishing|drawing|mailbox)\b/.test(requestText);
+    if (printFailure && !namedOtherSystem) {
+      category = 'HARDWARE';
+      reasons.push('Organisational rule: a printer or printout failure is hardware unless the request itself names a network, ERP, or security incident.');
+      if (urgencyRank(urgency) > urgencyRank('LOW') && !/production stopped|line (is )?down|shipping is blocked|shipping blocked/.test(requestText)) {
+        urgency = 'LOW';
+        reasons.push('Organisational rule: one printer that will not print is low urgency unless production or shipping is blocked.');
+      }
+    }
     const priority = PRIORITY_FOR_URGENCY[urgency];
     reasons.push(`Priority ${priority} is derived from urgency ${urgency} by the service-desk matrix.`);
     return {

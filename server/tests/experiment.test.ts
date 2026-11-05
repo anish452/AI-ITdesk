@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { materialiseRecords } from '../src/data/scenarios.js';
-import { hypothesisVerdict, runExperiment } from '../src/nlp/experiment.js';
+import { expandScenario, materialiseRecords, scenarios } from '../src/data/scenarios.js';
+import { hypothesisVerdict, createTrainedBundle, runExperiment } from '../src/nlp/experiment.js';
 import { macroF1 } from '../src/nlp/metrics.js';
 import { anonymize } from '../src/nlp/models.js';
 
@@ -30,6 +30,26 @@ describe('multi-agent experiment', () => {
     const verdicts = hypothesisVerdict(report);
     expect(verdicts).toHaveLength(3);
     expect(verdicts.every((verdict) => typeof verdict.supported === 'boolean')).toBe(true);
+  });
+});
+
+describe('printer failures', () => {
+  const bundle = createTrainedBundle();
+
+  it('classifies a printout error as hardware even when the form still names SAP', () => {
+    const result = bundle.classificationAgent(
+      'Cannot print printouts',
+      'When I print it shows an error message',
+      'SAP S/4HANA',
+    );
+    expect(result.category).toBe('HARDWARE');
+  });
+
+  it('keeps a label-printer network outage on the network queue', () => {
+    const scenario = scenarios.find((item) => item.key === 'net-printer-vlan');
+    const sample = expandScenario(scenario!, 0);
+    const result = bundle.classificationAgent(sample.title, sample.description, scenario!.system);
+    expect(result.category).toBe('NETWORK');
   });
 });
 

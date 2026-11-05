@@ -8,7 +8,14 @@ import { homeFor } from '../components/Shell';
 const demos = [
   ['Priya Shah', 'priya.shah@northline.example', 'Employee'],
   ['Sam Cole', 'sam.cole@northline.example', 'Employee'],
-  ['James Okonkwo', 'james.okonkwo@northline.example', 'Technician'],
+  ['James Okonkwo', 'james.okonkwo@northline.example', 'All categories'],
+  ['Mei Chen', 'mei.chen@northline.example', 'ERP'],
+  ['Noah Bennett', 'noah.bennett@northline.example', 'MES'],
+  ['Aroha Te Rangi', 'aroha.terangi@northline.example', 'Identity'],
+  ['Liam Fraser', 'liam.fraser@northline.example', 'Network'],
+  ['Sofia Alvarez', 'sofia.alvarez@northline.example', 'Hardware'],
+  ['Daniel Brooks', 'daniel.brooks@northline.example', 'Software'],
+  ['Priyanka Rao', 'priyanka.rao@northline.example', 'Cybersecurity'],
   ['Helena Voss', 'helena.voss@northline.example', 'Manager'],
   ['Alex Nguyen', 'admin@northline.example', 'Administrator'],
 ];
@@ -65,7 +72,7 @@ export function LoginPage() {
           </Field>
           {error && <p className="text-sm text-bad">{error}</p>}
           <Button type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Enter the desk'}</Button>
-          <div className="grid gap-2 pt-2">
+          <div className="grid max-h-80 gap-2 overflow-y-auto pt-2">
             {demos.map(([name, address, role]) => (
               <button
                 key={address}

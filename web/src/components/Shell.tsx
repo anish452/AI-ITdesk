@@ -1,7 +1,7 @@
 import { BookOpen, ClipboardList, Factory, LogOut, Scale, Settings, Shield } from 'lucide-react';
 import { NavLink, Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
-import { cn, pretty } from '../lib/utils';
+import { categoryLabel, cn, pretty } from '../lib/utils';
 
 const links = [
   { to: '/', label: 'My requests', roles: ['EMPLOYEE', 'TECHNICIAN', 'MANAGER', 'ADMIN'], icon: ClipboardList },
@@ -46,7 +46,7 @@ export function Shell() {
         </nav>
         <div className="border-t border-white/10 px-4 py-4 text-sm">
           <div className="font-medium">{user.name}</div>
-          <div className="text-xs text-[#c9bfb0]">{pretty(user.role)} · {user.plant}</div>
+          <div className="text-xs text-[#c9bfb0]">{pretty(user.role)}{user.supportCategory ? ` · ${categoryLabel(user.supportCategory)}` : ''} · {user.plant}</div>
           <button className="mt-3 inline-flex items-center gap-2 text-xs text-[#e7d3bc]" onClick={logout} type="button">
             <LogOut size={14} /> Sign out
           </button>

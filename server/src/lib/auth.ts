@@ -9,6 +9,7 @@ export type AuthUser = {
   role: string;
   department: string;
   plant: string;
+  supportCategory?: string | null;
 };
 
 export function signToken(user: AuthUser): string {

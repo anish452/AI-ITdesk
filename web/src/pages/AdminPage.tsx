@@ -4,7 +4,7 @@ import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { Field, Input, Select } from '../components/ui/field';
 import { api, type User } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { pretty, when } from '../lib/utils';
+import { categoryLabel, pretty, when } from '../lib/utils';
 
 type AuditEvent = { id: string; actorEmail: string | null; action: string; entityType: string; createdAt: string };
 
@@ -14,7 +14,7 @@ export function AdminPage() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [threshold, setThreshold] = useState(0.42);
   const [error, setError] = useState('');
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'TECHNICIAN', department: 'IT Operations', plant: 'Auckland Pack' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'TECHNICIAN', department: 'IT Operations', plant: 'Auckland Pack', supportCategory: '' });
   const admin = user?.role === 'ADMIN';
 
   function load() {
@@ -51,7 +51,7 @@ export function AdminPage() {
                 <div key={person.id} className="flex items-center justify-between px-5 py-3">
                   <div>
                     <div>{person.name}</div>
-                    <div className="text-xs text-muted">{person.email} · {pretty(person.role)} · {person.plant}</div>
+                    <div className="text-xs text-muted">{person.email} · {pretty(person.role)}{person.supportCategory ? ` · ${categoryLabel(person.supportCategory)}` : ''} · {person.plant}</div>
                   </div>
                   <Button variant="outline" type="button" onClick={() => api(`/api/users/${person.id}`, { method: 'PATCH', body: JSON.stringify({ active: person.active === false }) }).then(load)}>
                     {person.active === false ? 'Activate' : 'Deactivate'}
@@ -65,7 +65,7 @@ export function AdminPage() {
             <CardBody>
               <form className="grid gap-2" onSubmit={(event) => {
                 event.preventDefault();
-                api('/api/users', { method: 'POST', body: JSON.stringify(form) }).then(() => load()).catch((err: Error) => setError(err.message));
+                api('/api/users', { method: 'POST', body: JSON.stringify({ ...form, supportCategory: form.role === 'TECHNICIAN' && form.supportCategory ? form.supportCategory : null }) }).then(() => load()).catch((err: Error) => setError(err.message));
               }}>
                 <Field label="Name"><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
                 <Field label="Email"><Input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field>
@@ -75,6 +75,14 @@ export function AdminPage() {
                     {['EMPLOYEE', 'TECHNICIAN', 'MANAGER', 'ADMIN'].map((role) => <option key={role}>{role}</option>)}
                   </Select>
                 </Field>
+                {form.role === 'TECHNICIAN' && (
+                  <Field label="Support category">
+                    <Select value={form.supportCategory} onChange={(event) => setForm({ ...form, supportCategory: event.target.value })}>
+                      <option value="">All categories</option>
+                      {['ERP', 'MES', 'IDENTITY_ACCESS', 'NETWORK', 'HARDWARE', 'SOFTWARE', 'CYBERSECURITY'].map((category) => <option key={category} value={category}>{categoryLabel(category)}</option>)}
+                    </Select>
+                  </Field>
+                )}
                 <Field label="Department"><Input value={form.department} onChange={(event) => setForm({ ...form, department: event.target.value })} /></Field>
                 <Field label="Plant"><Input value={form.plant} onChange={(event) => setForm({ ...form, plant: event.target.value })} /></Field>
                 <Button type="submit">Create account</Button>

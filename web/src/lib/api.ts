@@ -7,6 +7,7 @@ export type User = {
   role: Role;
   department: string;
   plant: string;
+  supportCategory?: string | null;
   active?: boolean;
 };
 

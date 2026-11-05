@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { articleBody, DISTRACTORS, materialiseRecords, scenarios } from '../src/data/scenarios.js';
+import { articleBody, DISTRACTORS, expandScenario, materialiseRecords, scenarios } from '../src/data/scenarios.js';
 import { hashPassword } from '../src/lib/auth.js';
 import { prisma } from '../src/lib/prisma.js';
 import { warmModels } from '../src/lib/models.js';
@@ -35,12 +35,24 @@ async function main(): Promise<void> {
   `);
 
   const passwordHash = await hashPassword(password);
+  const specialists = [
+    { name: 'Mei Chen', email: 'mei.chen@northline.example', supportCategory: 'ERP', department: 'ERP Support', plant: 'Auckland Pack' },
+    { name: 'Noah Bennett', email: 'noah.bennett@northline.example', supportCategory: 'MES', department: 'MES Support', plant: 'Hamilton Process' },
+    { name: 'Aroha Te Rangi', email: 'aroha.terangi@northline.example', supportCategory: 'IDENTITY_ACCESS', department: 'Identity & Access', plant: 'Auckland Pack' },
+    { name: 'Liam Fraser', email: 'liam.fraser@northline.example', supportCategory: 'NETWORK', department: 'Network Operations', plant: 'Tauranga Logistics' },
+    { name: 'Sofia Alvarez', email: 'sofia.alvarez@northline.example', supportCategory: 'HARDWARE', department: 'Hardware Support', plant: 'Hamilton Process' },
+    { name: 'Daniel Brooks', email: 'daniel.brooks@northline.example', supportCategory: 'SOFTWARE', department: 'Software Support', plant: 'Auckland Pack' },
+    { name: 'Priyanka Rao', email: 'priyanka.rao@northline.example', supportCategory: 'CYBERSECURITY', department: 'Cybersecurity', plant: 'Auckland Pack' },
+  ] as const;
   const [priya, sam, james, helena, admin] = await Promise.all([
     prisma.user.create({ data: { name: 'Priya Shah', email: 'priya.shah@northline.example', passwordHash, role: 'EMPLOYEE', department: 'Procurement', plant: 'Auckland Pack' } }),
     prisma.user.create({ data: { name: 'Sam Cole', email: 'sam.cole@northline.example', passwordHash, role: 'EMPLOYEE', department: 'Warehouse', plant: 'Tauranga Logistics' } }),
-    prisma.user.create({ data: { name: 'James Okonkwo', email: 'james.okonkwo@northline.example', passwordHash, role: 'TECHNICIAN', department: 'IT Operations', plant: 'Hamilton Process' } }),
+    prisma.user.create({ data: { name: 'James Okonkwo', email: 'james.okonkwo@northline.example', passwordHash, role: 'TECHNICIAN', department: 'IT Operations', plant: 'Hamilton Process', supportCategory: null } }),
     prisma.user.create({ data: { name: 'Helena Voss', email: 'helena.voss@northline.example', passwordHash, role: 'MANAGER', department: 'Service Management', plant: 'Auckland Pack' } }),
     prisma.user.create({ data: { name: 'Alex Nguyen', email: 'admin@northline.example', passwordHash, role: 'ADMIN', department: 'Platform', plant: 'Auckland Pack' } }),
+    ...specialists.map((person) => prisma.user.create({
+      data: { name: person.name, email: person.email, passwordHash, role: 'TECHNICIAN', department: person.department, plant: person.plant, supportCategory: person.supportCategory },
+    })),
   ]);
   await prisma.setting.create({ data: { id: 1, confidenceThreshold: 0.42, orgName: 'Northline Manufacturing' } });
   await prisma.datasetRecord.createMany({ data: materialiseRecords() });
@@ -82,83 +94,75 @@ async function main(): Promise<void> {
     ON "KnowledgeArticle" USING hnsw (embedding vector_cosine_ops)
   `).catch(() => undefined);
 
-  const demo = [
-    {
-      requesterId: priya.id,
-      requesterRole: priya.role,
-      department: priya.department,
-      plant: priya.plant,
-      title: 'Cannot open purchase order 4500019020 in SAP',
-      description: 'The buyer at Auckland Pack cannot open purchase order 4500019020. Transaction ME21N shows an hourglass and never reaches the header. It started after the SAP GUI patch. Procurement is waiting.',
-      affectedSystem: 'SAP S/4HANA',
-    },
-    {
-      requesterId: priya.id,
-      requesterRole: priya.role,
-      department: priya.department,
-      plant: priya.plant,
-      title: 'Things are broken please help',
-      description: 'Computer not working on the floor. Please help soon.',
-      affectedSystem: 'Not specified',
-    },
-    {
-      requesterId: sam.id,
-      requesterRole: sam.role,
-      department: sam.department,
-      plant: sam.plant,
-      title: 'Handheld scanner will not pair at shipping',
-      description: 'One scanner at the Tauranga Logistics shipping bench will not pair with its cradle. Other scanners on the same wifi are working, so the network is up. This bench cannot confirm the outbound pallet.',
-      affectedSystem: 'Shop-floor hardware',
-    },
-    {
-      requesterId: sam.id,
-      requesterRole: sam.role,
-      department: sam.department,
-      plant: sam.plant,
-      title: 'I entered my password on a payroll phishing page',
-      description: 'An employee at Tauranga Logistics clicked a payroll phishing link and typed their password. The page was not the real portal. Please contain the account. This is a security incident, not a normal lockout.',
-      affectedSystem: 'Security operations',
-    },
-  ];
+  const requesters = [priya, sam];
+  const samples: { key: string; title: string; description: string; affectedSystem: string }[] = scenarios.map((scenario, index) => {
+    const expanded = expandScenario(scenario, index);
+    return { key: scenario.key, title: expanded.title, description: expanded.description, affectedSystem: scenario.system };
+  });
+  const outlook = scenarios.find((scenario) => scenario.key === 'sw-outlook');
+  if (outlook) {
+    const expanded = expandScenario(outlook, 100);
+    samples.push({ key: outlook.key, title: expanded.title, description: expanded.description, affectedSystem: outlook.system });
+  }
+  samples.push({
+    key: 'unclear',
+    title: 'Things are broken please help',
+    description: 'Computer not working on the floor. Please help soon.',
+    affectedSystem: 'Not specified',
+  });
 
-  const created = [];
-  for (const item of demo) {
-    const ticket = await prisma.ticket.create({ data: { ...item, status: 'SUBMITTED' } });
+  const created: { id: string; key: string }[] = [];
+  for (const [index, item] of samples.entries()) {
+    const requester = requesters[index % requesters.length];
+    const ticket = await prisma.ticket.create({
+      data: {
+        requesterId: requester.id,
+        requesterRole: requester.role,
+        department: requester.department,
+        plant: requester.plant,
+        title: item.title,
+        description: item.description,
+        affectedSystem: item.affectedSystem,
+        status: 'SUBMITTED',
+      },
+    });
     await runPipeline(ticket.id);
-    created.push(ticket.id);
+    created.push({ id: ticket.id, key: item.key });
   }
 
-  await prisma.ticket.update({
-    where: { id: created[2] },
-    data: { status: 'IN_PROGRESS', assignedToId: james.id },
-  });
-  const scannerRecommendation = await prisma.recommendation.findFirst({ where: { ticketId: created[2] }, orderBy: { createdAt: 'desc' } });
-  if (scannerRecommendation) {
-    await prisma.recommendation.update({
-      where: { id: scannerRecommendation.id },
-      data: { accepted: true, usefulness: 5, technicianNote: 'The spare-pool swap matches what the bench needs. Wireless was left unchanged.' },
-    });
+  const scanner = created.find((item) => item.key === 'hw-scanner');
+  if (scanner) {
+    await prisma.ticket.update({ where: { id: scanner.id }, data: { status: 'IN_PROGRESS' } });
+    const scannerRecommendation = await prisma.recommendation.findFirst({ where: { ticketId: scanner.id }, orderBy: { createdAt: 'desc' } });
+    if (scannerRecommendation) {
+      await prisma.recommendation.update({
+        where: { id: scannerRecommendation.id },
+        data: { accepted: true, usefulness: 5, technicianNote: 'The spare-pool swap matches what the bench needs. Wireless was left unchanged.' },
+      });
+    }
   }
 
-  await prisma.ticket.update({
-    where: { id: created[3] },
-    data: {
-      status: 'RESOLVED',
-      assignedToId: james.id,
-      resolvedAt: new Date(),
-      outcome: 'SUCCESS',
-      resolution:
-        'Night-shift lead at Tauranga confirmed the employee was on the packing mezzanine, not travelling. Reset the exposed credential, revoked refresh tokens, and quarantined gateway message PH-441 for the payroll-themed lure. Bank details were unchanged. No firewall edit and no server restart.',
-    },
-  });
-  const phishingRecommendation = await prisma.recommendation.findFirst({ where: { ticketId: created[3] }, orderBy: { createdAt: 'desc' } });
-  if (phishingRecommendation) {
-    await prisma.recommendation.update({
-      where: { id: phishingRecommendation.id },
-      data: { accepted: true, usefulness: 4, technicianNote: 'Used the containment steps and left the plant firewall alone.' },
+  const phishing = created.find((item) => item.key === 'cy-phish');
+  const phishingScenario = scenarios.find((scenario) => scenario.key === 'cy-phish');
+  if (phishing && phishingScenario) {
+    await prisma.ticket.update({
+      where: { id: phishing.id },
+      data: {
+        status: 'RESOLVED',
+        resolvedAt: new Date(),
+        outcome: 'SUCCESS',
+        resolution: phishingScenario.resolution,
+      },
     });
+    const phishingRecommendation = await prisma.recommendation.findFirst({ where: { ticketId: phishing.id }, orderBy: { createdAt: 'desc' } });
+    if (phishingRecommendation) {
+      await prisma.recommendation.update({
+        where: { id: phishingRecommendation.id },
+        data: { accepted: true, usefulness: 4, technicianNote: 'Used the containment steps and left the plant firewall alone.' },
+      });
+    }
+    await runLearning(phishing.id);
   }
-  await runLearning(created[3]);
 
   await prisma.auditLog.create({
     data: {
@@ -167,13 +171,14 @@ async function main(): Promise<void> {
       action: 'desk.seeded',
       entityType: 'Setting',
       entityId: '1',
-      details: { note: 'Demonstration data loaded for the COMP903 prototype.' },
+      details: { note: `Demonstration data loaded for the COMP903 prototype. ${created.length} requests allocated by category.` },
     },
   });
-  console.log('Seeded Northline Desk.');
+  console.log(`Seeded Northline Desk with ${created.length} requests.`);
   console.log(`Password for every demonstration account: ${password}`);
-  console.log('admin@northline.example, helena.voss@northline.example, james.okonkwo@northline.example, priya.shah@northline.example, sam.cole@northline.example');
+  console.log('Specialists:', specialists.map((person) => `${person.email} (${person.supportCategory})`).join(', '));
   void admin;
+  void james;
 }
 
 main()

@@ -11,6 +11,10 @@ export const redis = new IORedis(config.redisUrl, {
   lazyConnect: true,
 });
 
+redis.on('error', () => {
+  // initQueues records the failure and disconnects. Ignore later socket errors.
+});
+
 let ready = false;
 let pipelineQueue: Queue | null = null;
 let learnQueue: Queue | null = null;
@@ -32,6 +36,7 @@ export async function initQueues(): Promise<boolean> {
     return true;
   } catch (error) {
     ready = false;
+    redis.disconnect();
     console.warn('Redis is unavailable. Tickets will be processed in the API process.', error instanceof Error ? error.message : error);
     return false;
   }

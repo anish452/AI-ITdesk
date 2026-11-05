@@ -12,10 +12,11 @@ model User {
   email        String   @unique
   name         String
   passwordHash String
-  role         String
-  department   String
-  plant        String
-  active       Boolean  @default(true)
+  role            String
+  department      String
+  plant           String
+  supportCategory String?
+  active          Boolean  @default(true)
   createdAt    DateTime @default(now())
   requested    Ticket[] @relation("Requester")
   assigned     Ticket[] @relation("Assignee")
